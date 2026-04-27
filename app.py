@@ -149,6 +149,30 @@ def run_async(coro):
     finally:
         loop.close()
 
+
+def render_pipeline_result(result: dict, parent_container=None):
+    container = parent_container or st
+    status = result.get("status", "unknown")
+    apply_result = result.get("apply_result", {})
+    with container.expander("Pipeline details", expanded=True):
+        container.markdown(f"**Status:** {status}")
+        container.markdown(f"**ATS Score:** {result.get('ats_score', 0)}/100")
+        if result.get("skip_reason"):
+            container.warning(f"Skip reason: {result['skip_reason']}")
+        container.markdown(f"**Apply Result:** {apply_result.get('msg', '')}")
+        if result.get("errors"):
+            container.markdown("**Errors:**")
+            for err in result.get("errors", []):
+                container.code(err)
+        if result.get("suggestions"):
+            container.markdown("**Suggestions:**")
+            for suggestion in result.get("suggestions", []):
+                container.write(f"- {suggestion}")
+        if result.get("history"):
+            container.markdown("**Recent Pipeline History:**")
+            for entry in result.get("history", [])[-5:]:
+                container.write(f"- {entry}")
+
 # Sidebar Setup
 with st.sidebar:
     st.markdown("## ⚙️ Setup & Profile")
@@ -305,10 +329,11 @@ with tab1:
                                 openai_key=openai_key,
                                 rag_engine=st.session_state.get("rag_engine")
                             ))
-                            if result.get("apply_result", {}).get("ok"):
-                                st.success(f"✅ Applied to {job['company']}!")
-                            else:
-                                st.error(f"❌ Failed: {result.get('apply_result', {}).get('msg')}")
+                        if result.get("apply_result", {}).get("ok"):
+                            st.success(f"✅ Applied to {job['company']}!")
+                        else:
+                            st.error(f"❌ Failed: {result.get('apply_result', {}).get('msg')}")
+                        render_pipeline_result(result, parent_container=jc1)
                     else:
                         st.error("Agent Pipeline unavailable.")
 
@@ -319,31 +344,34 @@ with tab1:
                 st.warning("Search for jobs first!")
             else:
                 progress = st.progress(0)
+                batch_results = []
                 for i, job in enumerate(st.session_state.jobs):
-                    st.write(f"Applying to {job['title']} @ {job['company']}...")
-                    
-                    # Real Application Pipeline
-                    if AGENT_AVAILABLE:
-                        agent = JobApplicationAgent(use_mock=not bool(li_email))
-                        result = run_async(agent.run_pipeline(
-                            job=job,
-                            resume_text=st.session_state.get("resume_text", ""),
-                            applicant={"name": full_name, "email": recipient_email, "phone": phone},
-                            credentials={"linkedin_email": li_email, "linkedin_password": li_pass},
-                            resume_path=st.session_state.resume_path,
-                            openai_key=openai_key,
-                            rag_engine=st.session_state.get("rag_engine")
-                        ))
-                        
-                        if result.get("apply_result", {}).get("ok"):
-                            st.success(f"✅ Applied to {job['company']}!")
+                    with st.container():
+                        st.write(f"Applying to {job['title']} @ {job['company']}...")
+                        if AGENT_AVAILABLE:
+                            agent = JobApplicationAgent(use_mock=not bool(li_email))
+                            result = run_async(agent.run_pipeline(
+                                job=job,
+                                resume_text=st.session_state.get("resume_text", ""),
+                                applicant={"name": full_name, "email": recipient_email, "phone": phone},
+                                credentials={"linkedin_email": li_email, "linkedin_password": li_pass},
+                                resume_path=st.session_state.resume_path,
+                                openai_key=openai_key,
+                                rag_engine=st.session_state.get("rag_engine")
+                            ))
+                            batch_results.append(result)
+
+                            if result.get("apply_result", {}).get("ok"):
+                                st.success(f"✅ Applied to {job['company']}!")
+                            else:
+                                st.error(f"❌ Failed for {job['company']}: {result.get('apply_result', {}).get('msg')}")
+                            render_pipeline_result(result, parent_container=st)
                         else:
-                            st.error(f"❌ Failed for {job['company']}: {result.get('apply_result', {}).get('msg')}")
-                    else:
-                        st.error("Agent Pipeline unavailable.")
-                        
+                            st.error("Agent Pipeline unavailable.")
+
                     progress.progress((i+1)/len(st.session_state.jobs))
                 st.success("Bulk apply complete!")
+                st.session_state.last_bulk_results = batch_results
 
 # TAB 2: Real-time Monitor (NEW)
 with tab2:
